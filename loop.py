@@ -52,7 +52,30 @@ SYSTEM_PROMPT = f"""<SYSTEM_CAPABILITY>
 * You are utilizing a macOS Sonoma 15.7 environment using {platform.machine()} 
 You will monitor a twitch chat checking in on it every so often. You will then pick the most interesting thing to do based on the chat.
 * Note: Command line function calls may have latency. Chain multiple operations into single requests where feasible.
+Make sure to not use the same url box/window as the twitch chat. if you get stuck clicking on a tab it may be because you clicked the mute button.
 </SYSTEM_CAPABILITY>"""
+
+# SYSTEM_PROMPT = f"""<SYSTEM_CAPABILITY>
+# * You are utilizing a macOS Sonoma 15.7 environment using {platform.machine()}.
+# * Note: Command line function calls may have latency. Chain multiple operations into single requests where feasible.
+
+# Your goal is to research jobs for an AI/Python developer on Upwork. You will use the Brave browser to research jobs.
+
+# You will then write down your findings in a text editor that is open on your computer.
+
+# <WINDOWS_TO_USE>
+# Brave browser window opened to upwork.com you will use this to research jobs.
+# Text editor window opened to write down your findings.
+# </WINDOWS_TO_USE>
+
+# <TIPS>
+# Make sure to have everything in view before you take notes. Scrolling is more necessary then you might think.
+# Before typing in the text editor make sure you are in the right spot, specifically at the bottom of the document.
+# When writing make sure to use line breaks to separate the jobs.
+# </TIPS>
+
+# DO NOT USE ANY OTHER WINDOWS OR TABS. DO NOT USE THE CLI. if you get stuck clicking on something you may just need to adjust a little bit. if you cannot scroll you may just need to adjust a little bit.
+# </SYSTEM_CAPABILITY>"""
 
 class MessageHandler(Protocol):
     """Protocol defining how to handle various types of messages and outputs"""
@@ -241,6 +264,35 @@ class ComputerUseAgent:
             result_text = f"<system>{result.system}</system>\n{result_text}"
         return result_text
 
+def save_text_to_file(text, filename="input.txt"):
+   """Helper function to save text to a file"""
+   try:
+       with open(filename, 'w') as f:
+           f.write(text)
+       print(f"Saved text to {filename}")
+   except Exception as e:
+       print(f"Error saving to file: {e}")
+
+def append_with_rewrite(text, filename="logs.txt"):
+    """Reads existing file content, adds new text, and rewrites the whole file"""
+    try:
+        # Read existing content
+        try:
+            with open(filename, 'r') as f:
+                existing_content = f.read()
+        except FileNotFoundError:
+            existing_content = ""
+        
+        # Combine old and new content
+        full_content = existing_content + ("\n" if existing_content else "") + text
+        
+        # Write everything back
+        with open(filename, 'w') as f:
+            f.write(full_content)
+        print(f"Updated {filename} with new text")
+        
+    except Exception as e:
+        print(f"Error updating file: {e}")
 
 class SimpleMessageHandler(MessageHandler):
     """A simple implementation that prints outputs to console"""
@@ -257,7 +309,11 @@ class SimpleMessageHandler(MessageHandler):
     async def handle_model_output(self, content: BetaContentBlock) -> None:
         print("\nModel Output:")
         if content.type == "text":
-            print(content.text)
+            # print(content.text)
+            save_text_to_file(content.text,"input.txt")
+            append_with_rewrite(content.text+"\n\n", "logs.txt")
+            # await talk.save_text_to_queue(content.text)
+            # await asyncio.sleep(3)
         elif content.type == "tool_use":
             print(f"Using tool: {content.name}")
             print(f"Input: {content.input}")
@@ -269,33 +325,61 @@ class SimpleMessageHandler(MessageHandler):
 async def main():
     """Example usage of the ComputerUseAgent"""
     # Initialize the agent
-    agent = ComputerUseAgent(
-        api_provider=APIProvider.ANTHROPIC,
-        api_key=os.getenv("ANTHROPIC_API_KEY"),
-        only_n_most_recent_images=10
-    )
+    talk.remove_speech_file()
+    save_text_to_file("starting computer use agent in 5 seconds","input.txt")
+    for i in range(1,6):
+        await asyncio.sleep(1.2)
     
-    # Example messages
-    # messages = [
-    #     {
-    #         "role": "user",
-    #         "content": [{"type": "text", "text": "open messages on my computer and message david kreitter 'hi I am an agent' wait for a reply then reply appropriately"}]
-    #     }
-    # ]
+    count = 0
+    total_iterations = 1
+    while True and count < total_iterations:
+        count += 1
+        agent = ComputerUseAgent(
+            api_provider=APIProvider.ANTHROPIC,
+            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            only_n_most_recent_images=10
+        )
+        
+        # Example messages
+        # messages = [
+        #     {
+        #         "role": "user",
+        #         "content": [{"type": "text", "text": "open messages on my computer and message david kreitter 'hi I am an agent' wait for a reply then reply appropriately"}]
+        #     }
+        # ]
 
-    messages = [
-        {
-            "role": "user",
-            "content": [{"type": "text", "text": """your job is to monitor a twitch chat checking in on it every so often. You will then pick the most interesting thing to do based on the chat. Keep going until you are told to stop.
-the twich is in firefox and the window is open and it is the only window open in firefox. every time you decide what messages to respond to summarize what you have done so far as part of that process."""}]
-        }
-    ]
-    
-    # Process messages
-    handler = SimpleMessageHandler()
-    updated_messages = await agent.process_messages(messages, handler)
-    
-    return updated_messages
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": """your job is to monitor a twitch chat checking in on it every so often. You will then pick the most interesting thing to do based on the chat. Keep going until you are told to stop.
+    the twich is in firefox and the window is open and it is the only window open in firefox. every time you decide what messages to respond to summarize what you have done so far as part of that process. NEVER use the url fiedl of the window of the twitch chat. make sure if you use the browser to open a new window every time."""}]
+            }
+        ]
+
+
+        # messages = [
+        #     {
+        #         "role": "user",
+        #         "content": [{"type": "text", "text": """please research corcept using the brave browser than write down your finding in text edit."""}]
+        #     }
+        # ]
+
+
+#         messages = [
+#             {
+#                 "role": "user",
+#                 "content": [{"type": "text", "text": """your goal is to research jobs for an AI/Python developer on Upwork. You will use the Brave browser to research jobs.
+# You will then write down your findings in a text editor that is open on your computer. Do not take detailed notes just write down the job titles and the pay for each job."""}]
+#             }
+#         ]
+
+
+        
+        # Process messages
+        handler = SimpleMessageHandler()
+        updated_messages = await agent.process_messages(messages, handler)
+        
+        return updated_messages
 
 if __name__ == "__main__":
     import asyncio

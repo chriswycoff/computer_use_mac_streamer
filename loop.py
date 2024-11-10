@@ -1,17 +1,17 @@
 """
-Agentic sampling loop that calls the Anthropic API and local implementation of anthropic-defined computer use tools.
+Core computer use agent loop that can work with messages from any source.
 """
-
+import dotenv
+import os
+dotenv.load_dotenv()
 import platform
 from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, cast
-
+from typing import Any, Protocol, cast
+import talk
 from anthropic import Anthropic, AnthropicBedrock, AnthropicVertex, APIResponse
-from anthropic.types import (
-    ToolResultBlockParam,
-)
+from anthropic.types import ToolResultBlockParam
 from anthropic.types.beta import (
     BetaContentBlock,
     BetaContentBlockParam,
@@ -20,18 +20,17 @@ from anthropic.types.beta import (
     BetaMessageParam,
     BetaTextBlockParam,
     BetaToolResultBlockParam,
+    BetaToolUseBlock,
 )
 
 from tools import BashTool, ComputerTool, EditTool, ToolCollection, ToolResult
 
 BETA_FLAG = "computer-use-2024-10-22"
 
-
 class APIProvider(StrEnum):
     ANTHROPIC = "anthropic"
     BEDROCK = "bedrock"
     VERTEX = "vertex"
-
 
 PROVIDER_TO_DEFAULT_MODEL_NAME: dict[APIProvider, str] = {
     APIProvider.ANTHROPIC: "claude-3-5-sonnet-20241022",
@@ -39,239 +38,265 @@ PROVIDER_TO_DEFAULT_MODEL_NAME: dict[APIProvider, str] = {
     APIProvider.VERTEX: "claude-3-5-sonnet-v2@20241022",
 }
 
-
-# This system prompt is optimized for the Docker environment in this repository and
-# specific tool combinations enabled.
-# We encourage modifying this system prompt to ensure the model has context for the
-# environment it is running in, and to provide any additional information that may be
-# helpful for the task at hand.
+# # Define the system prompt
 # SYSTEM_PROMPT = f"""<SYSTEM_CAPABILITY>
-# * You are utilizing a macOS Sonoma 15.7 environment using {platform.machine()} architecture with internet access.
-# * You can install applications using homebrew with your bash tool. Use curl instead of wget.
-# * To open Chrome, please just click on the Chrome icon in the Dock or use Spotlight.
-# * Using bash tool you can start GUI applications. GUI apps can be launched directly or with `open -a "Application Name"`. GUI apps will appear natively within macOS, but they may take some time to appear. Take a screenshot to confirm it did.
-# * When using your bash tool with commands that are expected to output very large quantities of text, redirect into a tmp file and use str_replace_editor or `grep -n -B <lines before> -A <lines after> <query> <filename>` to confirm output.
-# * When viewing a page it can be helpful to zoom out so that you can see everything on the page. In Chrome, use Command + "-" to zoom out or Command + "+" to zoom in.
-# * When using your computer function calls, they take a while to run and send back to you. Where possible/feasible, try to chain multiple of these calls all into one function calls request.
-# * The current date is {datetime.today().strftime('%A, %B %-d, %Y')}.
-# </SYSTEM_CAPABILITY>
-# <IMPORTANT>
-# * When using Chrome, if any first-time setup dialogs appear, IGNORE THEM. Instead, click directly in the address bar and enter the appropriate search term or URL there.
-# * If the item you are looking at is a pdf, if after taking a single screenshot of the pdf it seems that you want to read the entire document instead of trying to continue to read the pdf from your screenshots + navigation, determine the URL, use curl to download the pdf, install and use pdftotext (available via homebrew) to convert it to a text file, and then read that text file directly with your StrReplaceEditTool.
-# </IMPORTANT>"""
-# SYSTEM_PROMPT = f"""<SYSTEM_CAPABILITY>
-# * You are utilizing a macOS Sonoma 15.7 environment using {platform.machine()} architecture with command line internet access.
-# * Package management:
-#   - Use homebrew for package installation
-#   - Use curl for HTTP requests
-#   - Use npm/yarn for Node.js packages
-#   - Use pip for Python packages
-
-# * Browser automation available via Playwright:
-#   - Supports Chrome, Firefox, and WebKit
-#   - Can handle JavaScript-heavy applications
-#   - Capable of screenshots, navigation, and interaction
-#   - Handles dynamic content loading
-
-# * System automation:
-#   - cliclick for simulating mouse/keyboard input
-#   - osascript for AppleScript commands
-#   - launchctl for managing services
-#   - defaults for reading/writing system preferences
-
-# * Development tools:
-#   - Standard Unix/Linux command line utilities
-#   - Git for version control
-#   - Docker for containerization
-#   - Common build tools (make, cmake, etc.)
-
-# * Output handling:
-#   - For large output, redirect to tmp files: command > /tmp/output.txt
-#   - Use grep with context: grep -n -B <before> -A <after> <query> <filename>
-#   - Stream processing with awk, sed, and other text utilities
-
+# * You are utilizing a macOS Sonoma 15.7 environment using {platform.machine()} 
+# You are definitely allowed to use the messages application.
+# Just do not send any messages.
 # * Note: Command line function calls may have latency. Chain multiple operations into single requests where feasible.
-
 # * The current date is {datetime.today().strftime('%A, %B %-d, %Y')}.
 # </SYSTEM_CAPABILITY>"""
 
-
+# Define the system prompt
 SYSTEM_PROMPT = f"""<SYSTEM_CAPABILITY>
-* You are utilizing a macOS Sonoma 15.7 environment using {platform.machine()} architecture with command line internet access.
-* Please use brave-browser for browsing the internet.
+* You are utilizing a macOS Sonoma 15.7 environment using {platform.machine()} 
+You will monitor a twitch chat checking in on it every so often. You will then pick the most interesting thing to do based on the chat.
 * Note: Command line function calls may have latency. Chain multiple operations into single requests where feasible.
-
-* The current date is {datetime.today().strftime('%A, %B %-d, %Y')}.
-
-When you are asked a question you will say first say "HI IM Frank" and then answer the question.
 </SYSTEM_CAPABILITY>"""
 
-async def sampling_loop(
-    *,
-    model: str,
-    provider: APIProvider,
-    system_prompt_suffix: str,
-    messages: list[BetaMessageParam],
-    output_callback: Callable[[BetaContentBlock], None],
-    tool_output_callback: Callable[[ToolResult, str], None],
-    api_response_callback: Callable[[APIResponse[BetaMessage]], None],
-    api_key: str,
-    only_n_most_recent_images: int | None = None,
-    max_tokens: int = 4096,
-):
-    """
-    Agentic sampling loop for the assistant/tool interaction of computer use.
-    """
-    tool_collection = ToolCollection(
-        ComputerTool(),
-        BashTool(),
-        EditTool(),
-    )
-    system = (
-        f"{SYSTEM_PROMPT}{' ' + system_prompt_suffix if system_prompt_suffix else ''}"
-    )
+class MessageHandler(Protocol):
+    """Protocol defining how to handle various types of messages and outputs"""
+    async def handle_tool_output(self, result: ToolResult, tool_id: str) -> None:
+        """Handle output from tools"""
+        ...
+    
+    async def handle_model_output(self, content: BetaContentBlock) -> None:
+        """Handle output from the model"""
+        ...
+    
+    async def handle_api_response(self, response: APIResponse[BetaMessage]) -> None:
+        """Handle raw API responses"""
+        ...
 
-    while True:
-        if only_n_most_recent_images:
-            _maybe_filter_to_n_most_recent_images(messages, only_n_most_recent_images)
-
-        if provider == APIProvider.ANTHROPIC:
-            client = Anthropic(api_key=api_key)
-        elif provider == APIProvider.VERTEX:
-            client = AnthropicVertex()
-        elif provider == APIProvider.BEDROCK:
-            client = AnthropicBedrock()
-
-        # Call the API
-        # we use raw_response to provide debug information to streamlit. Your
-        # implementation may be able call the SDK directly with:
-        # `response = client.messages.create(...)` instead.
-        raw_response = client.beta.messages.with_raw_response.create(
-            max_tokens=max_tokens,
-            messages=messages,
-            model=model,
-            system=system,
-            tools=tool_collection.to_params(),
-            betas=[BETA_FLAG],
+class ComputerUseAgent:
+    """Main agent class for handling computer use interactions"""
+    
+    def __init__(
+        self,
+        api_provider: APIProvider,
+        api_key: str,
+        model: str | None = None,
+        system_prompt_suffix: str = "",
+        max_tokens: int = 4096,
+        only_n_most_recent_images: int | None = None,
+    ):
+        self.api_provider = api_provider
+        self.api_key = api_key
+        self.model = model or PROVIDER_TO_DEFAULT_MODEL_NAME[api_provider]
+        self.system_prompt = f"{SYSTEM_PROMPT}{' ' + system_prompt_suffix if system_prompt_suffix else ''}"
+        self.max_tokens = max_tokens
+        self.only_n_most_recent_images = only_n_most_recent_images
+        
+        self.tool_collection = ToolCollection(
+            ComputerTool(),
+            BashTool(),
+            EditTool(),
         )
+        
+        # Initialize the appropriate client
+        if api_provider == APIProvider.ANTHROPIC:
+            self.client = Anthropic(api_key=api_key)
+        elif api_provider == APIProvider.VERTEX:
+            self.client = AnthropicVertex()
+        elif api_provider == APIProvider.BEDROCK:
+            self.client = AnthropicBedrock()
+        else:
+            raise ValueError(f"Unsupported API provider: {api_provider}")
 
-        api_response_callback(cast(APIResponse[BetaMessage], raw_response))
+    async def process_messages(
+        self,
+        messages: list[BetaMessageParam],
+        message_handler: MessageHandler,
+    ) -> list[BetaMessageParam]:
+        """
+        Process a list of messages through the computer use agent loop.
+        Returns the updated message history.
+        """
+        first = True
+        while True:  # Continue looping until no more tool calls are needed
+            if not first:
 
-        response = raw_response.parse()
+                pass
+                # await asyncio.sleep(5)
+            first = False
+            if self.only_n_most_recent_images:
+                self._maybe_filter_to_n_most_recent_images(messages)
 
-        messages.append(
-            {
+            # Call the API
+            raw_response = self.client.beta.messages.with_raw_response.create(
+                max_tokens=self.max_tokens,
+                messages=messages,
+                model=self.model,
+                system=self.system_prompt,
+                tools=self.tool_collection.to_params(),
+                betas=[BETA_FLAG],
+            )
+
+            await message_handler.handle_api_response(cast(APIResponse[BetaMessage], raw_response))
+            response = raw_response.parse()
+
+            messages.append({
                 "role": "assistant",
                 "content": cast(list[BetaContentBlockParam], response.content),
-            }
+            })
+
+            tool_result_content: list[BetaToolResultBlockParam] = []
+            for content_block in cast(list[BetaContentBlock], response.content):
+                await message_handler.handle_model_output(content_block)
+                
+                if content_block.type == "tool_use":
+                    result = await self.tool_collection.run(
+                        name=content_block.name,
+                        tool_input=cast(dict[str, Any], content_block.input),
+                    )
+                    tool_result_content.append(
+                        self._make_api_tool_result(result, content_block.id)
+                    )
+                    await message_handler.handle_tool_output(result, content_block.id)
+
+            if tool_result_content:
+                messages.append({"content": tool_result_content, "role": "user"})
+            else:
+                # If no tool calls were made, we're done with this interaction
+                return messages
+
+    def _maybe_filter_to_n_most_recent_images(
+        self,
+        messages: list[BetaMessageParam],
+        min_removal_threshold: int = 10,
+    ):
+        """Filter messages to keep only N most recent images"""
+        tool_result_blocks = cast(
+            list[ToolResultBlockParam],
+            [
+                item
+                for message in messages
+                for item in (
+                    message["content"] if isinstance(message["content"], list) else []
+                )
+                if isinstance(item, dict) and item.get("type") == "tool_result"
+            ],
         )
 
-        tool_result_content: list[BetaToolResultBlockParam] = []
-        for content_block in cast(list[BetaContentBlock], response.content):
-            print("CONTENT", content_block)
-            output_callback(content_block)
-            if content_block.type == "tool_use":
-                result = await tool_collection.run(
-                    name=content_block.name,
-                    tool_input=cast(dict[str, Any], content_block.input),
-                )
-                tool_result_content.append(
-                    _make_api_tool_result(result, content_block.id)
-                )
-                tool_output_callback(result, content_block.id)
+        total_images = sum(
+            1
+            for tool_result in tool_result_blocks
+            for content in tool_result.get("content", [])
+            if isinstance(content, dict) and content.get("type") == "image"
+        )
 
-        if not tool_result_content:
-            return messages
+        images_to_remove = total_images - self.only_n_most_recent_images
+        # for better cache behavior, we want to remove in chunks
+        images_to_remove -= images_to_remove % min_removal_threshold
 
-        messages.append({"content": tool_result_content, "role": "user"})
+        for tool_result in tool_result_blocks:
+            if isinstance(tool_result.get("content"), list):
+                new_content = []
+                for content in tool_result.get("content", []):
+                    if isinstance(content, dict) and content.get("type") == "image":
+                        if images_to_remove > 0:
+                            images_to_remove -= 1
+                            continue
+                    new_content.append(content)
+                tool_result["content"] = new_content
 
-
-def _maybe_filter_to_n_most_recent_images(
-    messages: list[BetaMessageParam],
-    images_to_keep: int,
-    min_removal_threshold: int = 10,
-):
-    """
-    With the assumption that images are screenshots that are of diminishing value as
-    the conversation progresses, remove all but the final `images_to_keep` tool_result
-    images in place, with a chunk of min_removal_threshold to reduce the amount we
-    break the implicit prompt cache.
-    """
-    if images_to_keep is None:
-        return messages
-
-    tool_result_blocks = cast(
-        list[ToolResultBlockParam],
-        [
-            item
-            for message in messages
-            for item in (
-                message["content"] if isinstance(message["content"], list) else []
-            )
-            if isinstance(item, dict) and item.get("type") == "tool_result"
-        ],
-    )
-
-    total_images = sum(
-        1
-        for tool_result in tool_result_blocks
-        for content in tool_result.get("content", [])
-        if isinstance(content, dict) and content.get("type") == "image"
-    )
-
-    images_to_remove = total_images - images_to_keep
-    # for better cache behavior, we want to remove in chunks
-    images_to_remove -= images_to_remove % min_removal_threshold
-
-    for tool_result in tool_result_blocks:
-        if isinstance(tool_result.get("content"), list):
-            new_content = []
-            for content in tool_result.get("content", []):
-                if isinstance(content, dict) and content.get("type") == "image":
-                    if images_to_remove > 0:
-                        images_to_remove -= 1
-                        continue
-                new_content.append(content)
-            tool_result["content"] = new_content
-
-
-def _make_api_tool_result(
-    result: ToolResult, tool_use_id: str
-) -> BetaToolResultBlockParam:
-    """Convert an agent ToolResult to an API ToolResultBlockParam."""
-    tool_result_content: list[BetaTextBlockParam | BetaImageBlockParam] | str = []
-    is_error = False
-    if result.error:
-        is_error = True
-        tool_result_content = _maybe_prepend_system_tool_result(result, result.error)
-    else:
-        if result.output:
-            tool_result_content.append(
-                {
+    def _make_api_tool_result(
+        self,
+        result: ToolResult,
+        tool_use_id: str
+    ) -> BetaToolResultBlockParam:
+        """Convert a ToolResult to an API ToolResultBlockParam"""
+        tool_result_content: list[BetaTextBlockParam | BetaImageBlockParam] | str = []
+        is_error = False
+        
+        if result.error:
+            is_error = True
+            tool_result_content = self._maybe_prepend_system_tool_result(result, result.error)
+        else:
+            if result.output:
+                tool_result_content.append({
                     "type": "text",
-                    "text": _maybe_prepend_system_tool_result(result, result.output),
-                }
-            )
-        if result.base64_image:
-            tool_result_content.append(
-                {
+                    "text": self._maybe_prepend_system_tool_result(result, result.output),
+                })
+            if result.base64_image:
+                tool_result_content.append({
                     "type": "image",
                     "source": {
                         "type": "base64",
                         "media_type": "image/png",
                         "data": result.base64_image,
                     },
-                }
-            )
-    return {
-        "type": "tool_result",
-        "content": tool_result_content,
-        "tool_use_id": tool_use_id,
-        "is_error": is_error,
-    }
+                })
+                
+        return {
+            "type": "tool_result",
+            "content": tool_result_content,
+            "tool_use_id": tool_use_id,
+            "is_error": is_error,
+        }
+
+    def _maybe_prepend_system_tool_result(self, result: ToolResult, result_text: str) -> str:
+        """Add system information to tool result if present"""
+        if result.system:
+            result_text = f"<system>{result.system}</system>\n{result_text}"
+        return result_text
 
 
-def _maybe_prepend_system_tool_result(result: ToolResult, result_text: str):
-    if result.system:
-        result_text = f"<system>{result.system}</system>\n{result_text}"
-    return result_text
+class SimpleMessageHandler(MessageHandler):
+    """A simple implementation that prints outputs to console"""
+    
+    async def handle_tool_output(self, result: ToolResult, tool_id: str) -> None:
+        print(f"\nTool Output (ID: {tool_id}):")
+        if result.output:
+            print(result.output)
+        if result.error:
+            print(f"Error: {result.error}")
+        if result.base64_image:
+            print("[Image data available]")
+            
+    async def handle_model_output(self, content: BetaContentBlock) -> None:
+        print("\nModel Output:")
+        if content.type == "text":
+            print(content.text)
+        elif content.type == "tool_use":
+            print(f"Using tool: {content.name}")
+            print(f"Input: {content.input}")
+            
+    async def handle_api_response(self, response: APIResponse[BetaMessage]) -> None:
+        print(f"\nAPI Response Status: {response.http_response.status_code}")
+
+
+async def main():
+    """Example usage of the ComputerUseAgent"""
+    # Initialize the agent
+    agent = ComputerUseAgent(
+        api_provider=APIProvider.ANTHROPIC,
+        api_key=os.getenv("ANTHROPIC_API_KEY"),
+        only_n_most_recent_images=10
+    )
+    
+    # Example messages
+    # messages = [
+    #     {
+    #         "role": "user",
+    #         "content": [{"type": "text", "text": "open messages on my computer and message david kreitter 'hi I am an agent' wait for a reply then reply appropriately"}]
+    #     }
+    # ]
+
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": """your job is to monitor a twitch chat checking in on it every so often. You will then pick the most interesting thing to do based on the chat. Keep going until you are told to stop.
+the twich is in firefox and the window is open and it is the only window open in firefox. every time you decide what messages to respond to summarize what you have done so far as part of that process."""}]
+        }
+    ]
+    
+    # Process messages
+    handler = SimpleMessageHandler()
+    updated_messages = await agent.process_messages(messages, handler)
+    
+    return updated_messages
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())

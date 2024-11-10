@@ -48,11 +48,24 @@ PROVIDER_TO_DEFAULT_MODEL_NAME: dict[APIProvider, str] = {
 # </SYSTEM_CAPABILITY>"""
 
 # Define the system prompt
+# SYSTEM_PROMPT = f"""<SYSTEM_CAPABILITY>
+# * You are utilizing a macOS Sonoma 15.7 environment using {platform.machine()} with internet access
+# You will monitor a twitch chat checking in on it every so often. You will then pick the most interesting thing to do based on the chat.
+# * Note: Command line function calls may have latency. Chain multiple operations into single requests where feasible.
+# Make sure to not use the same url box/window as the twitch chat. if you get stuck clicking on a tab it may be because you clicked the mute button.
+# </SYSTEM_CAPABILITY>"""
+
 SYSTEM_PROMPT = f"""<SYSTEM_CAPABILITY>
-* You are utilizing a macOS Sonoma 15.7 environment using {platform.machine()} 
-You will monitor a twitch chat checking in on it every so often. You will then pick the most interesting thing to do based on the chat.
+* You are utilizing a macOS Sonoma 15.7 environment using {platform.machine()} with internet access
+You will monitor a chat checking in on it every so often. You will then pick the most interesting thing to do based on the chat.
 * Note: Command line function calls may have latency. Chain multiple operations into single requests where feasible.
 Make sure to not use the same url box/window as the twitch chat. if you get stuck clicking on a tab it may be because you clicked the mute button.
+Only use firefox nothing else. 
+Make sure to keep the chat open.
+Interact with the chat and send funny mssages back as appropriate.
+if you get stuck make sure to not click the exact same pixels again try moving slightly. over. you often get stuck by clicking not quite in the right spot.
+if you lose the chat window it is at https://tlk.io/aihack 
+
 </SYSTEM_CAPABILITY>"""
 
 # SYSTEM_PROMPT = f"""<SYSTEM_CAPABILITY>
@@ -331,7 +344,7 @@ async def main():
         await asyncio.sleep(1.2)
     
     count = 0
-    total_iterations = 1
+    total_iterations = 5
     while True and count < total_iterations:
         count += 1
         agent = ComputerUseAgent(
@@ -348,11 +361,19 @@ async def main():
         #     }
         # ]
 
+#         messages = [
+#             {
+#                 "role": "user",
+#                 "content": [{"type": "text", "text": """your job is to monitor a twitch chat checking in on it every so often. You will then pick the most interesting thing to do based on the chat. Keep going until you are told to stop.
+# the twich is in firefox and the window is open and it is the only window open in firefox. every time you decide what messages to respond to summarize what you have done so far as part of that process. NEVER use the url fiedl of the window of the twitch chat. make sure if you use the browser to open a new window every time."""}]
+#             }
+#         ]
+
         messages = [
             {
                 "role": "user",
-                "content": [{"type": "text", "text": """your job is to monitor a twitch chat checking in on it every so often. You will then pick the most interesting thing to do based on the chat. Keep going until you are told to stop.
-    the twich is in firefox and the window is open and it is the only window open in firefox. every time you decide what messages to respond to summarize what you have done so far as part of that process. NEVER use the url fiedl of the window of the twitch chat. make sure if you use the browser to open a new window every time."""}]
+                "content": [{"type": "text", "text": """your job is to monitor a chat checking in on it every so often. You will then pick the most interesting thing to do based on the chat. Keep going until you are told to stop.
+the chat is in firefox and the window is open and it is the only window open in firefox.  NEVER use the url field of the window of the twitch chat. Use a seperate window to do things. make sure if you use the browser to open a new window every time."""}]
             }
         ]
 

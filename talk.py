@@ -30,6 +30,10 @@ def generate_and_play_speech(text):
     Popen(['afplay', str(filename)])
 
 def remove_speech_file():
+    # remove input.txt file
+    filename = Path("input.txt")
+    if filename.exists():
+        filename.unlink()
     filename = SPEECH_DIR / "speech.mp3"
     if filename.exists():
         filename.unlink()
@@ -66,5 +70,5 @@ def watch_for_text_changes(filename="input.txt"):
             time.sleep(1)
 
 if __name__ == "__main__":
-
+    time.sleep(1)  # Wait for the file to be created
     watch_for_text_changes()
